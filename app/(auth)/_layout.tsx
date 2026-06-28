@@ -1,0 +1,14 @@
+// Auth group layout — no bottom nav, simple stack
+import { Stack } from "expo-router";
+
+export default function AuthLayout() {
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: "#0a0a0f" },
+        animation: "slide_from_right",
+      }}
+    />
+  );
+}

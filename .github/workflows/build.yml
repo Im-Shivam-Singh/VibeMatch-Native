@@ -1,0 +1,177 @@
+name: EAS Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - android
+          - ios
+      profile:
+        description: "Build profile"
+        required: true
+        default: "preview"
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: android
+          - platform: ios
+        # Only build the selected platform(s) from workflow_dispatch
+        # For push to main, build both
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 📲 Setup Expo
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📥 Install dependencies
+        run: npm ci
+
+      - name: 🚀 Build (Android)
+        if: matrix.platform == 'android' && (github.event.inputs.platform == 'all' || github.event.inputs.platform == 'android' || github.event_name == 'push')
+        run: |
+          PROFILE=${{ github.event.inputs.profile || 'preview' }}
+          eas build --platform android --profile $PROFILE --non-interactive --wait
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 🚀 Build (iOS)
+        if: matrix.platform == 'ios' && (github.event.inputs.platform == 'all' || github.event.inputs.platform == 'ios' || github.event_name == 'push')
+        run: |
+          PROFILE=${{ github.event.inputs.platform == 'ios' && github.event.inputs.profile || 'preview' }}
+          eas build --platform ios --profile $PROFILE --non-interactive --wait
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📧 Notify on build completion
+        if: always()
+        run: |
+          BUILD_STATUS="failed"
+          if [ "${{ job.status }}" = "success" ]; then
+            BUILD_STATUS="succeeded"
+          fi
+
+          # Get build info from EAS
+          BUILD_INFO=$(eas build:list --limit 1 --platform ${{ matrix.platform }} --json 2>/dev/null || echo "[]")
+
+          # Extract build URL and ID
+          BUILD_URL=$(echo "$BUILD_INFO" | python3 -c "
+          import json, sys
+          try:
+            builds = json.loads(sys.stdin.read())
+            if builds:
+              print(builds[0].get('artifacts', {}).get('buildUrl', 'N/A'))
+            else:
+              print('N/A')
+          except:
+            print('N/A')
+          " 2>/dev/null || echo "N/A")
+
+          BUILD_ID=$(echo "$BUILD_INFO" | python3 -c "
+          import json, sys
+          try:
+            builds = json.loads(sys.stdin.read())
+            if builds:
+              print(builds[0].get('id', 'N/A'))
+            else:
+              print('N/A')
+          except:
+            print('N/A')
+          " 2>/dev/null || echo "N/A")
+
+          # Create EAS dashboard link
+          PROJECT_NAME="vibematch-native"
+          EAS_DASHBOARD="https://expo.dev/accounts/${{ secrets.EXPO_ACCOUNT || 'vibematch' }}/projects/$PROJECT_NAME/builds"
+
+          echo "========================================"
+          echo "🛠️  VibeMatch Build Report"
+          echo "========================================"
+          echo "Platform: ${{ matrix.platform }}"
+          echo "Status: $BUILD_STATUS"
+          echo "Build ID: $BUILD_ID"
+          echo "Download URL: $BUILD_URL"
+          echo "Dashboard: $EAS_DASHBOARD"
+          echo "========================================"
+          echo ""
+          echo "📱 Phone: 9677026531 (India)"
+          echo ""
+
+          # Send email notification if SendGrid API key is configured
+          if [ -n "${{ secrets.SENDGRID_API_KEY }}" ]; then
+            curl -s -X POST "https://api.sendgrid.com/v3/mail/send" \
+              -H "Authorization: Bearer ${{ secrets.SENDGRID_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "personalizations": [{
+                  "to": [{"email": "${{ secrets.NOTIFICATION_EMAIL }}"}],
+                  "subject": "VibeMatch Build '"$BUILD_STATUS"' - ${{ matrix.platform }}"
+                }],
+                "from": {"email": "builds@vibematch.app", "name": "VibeMatch CI"},
+                "content": [{
+                  "type": "text/plain",
+                  "value": "VibeMatch Build Report\n\nPlatform: ${{ matrix.platform }}\nStatus: '"$BUILD_STATUS"'\nBuild ID: '"$BUILD_ID"'\nDownload URL: '"$BUILD_URL"'\nDashboard: '"$EAS_DASHBOARD"'\n\nPhone: 9677026531 (India)\n\n--\nVibeMatch CI Bot\n\nNote: For WhatsApp notifications, consider integrating the WhatsApp Business API. See README for details."
+                }]
+              }'
+            echo "📧 Email notification sent!"
+          else
+            echo "⚠️  No SENDGRID_API_KEY configured. Skipping email notification."
+            echo "   Add SENDGRID_API_KEY and NOTIFICATION_EMAIL to GitHub secrets to enable email notifications."
+          fi
+
+          # Note about WhatsApp:
+          # Direct WhatsApp messaging from GitHub Actions is not feasible without
+          # the WhatsApp Business API (which requires a Facebook Business account
+          # and app approval). If you want WhatsApp notifications, consider:
+          #   1. WhatsApp Business API (official, requires approval)
+          #   2. Twilio WhatsApp API (easier setup, paid service)
+          #   3. CallMeBot (free but limited, for personal use)
+          # For now, we use email notifications as the primary channel.
+          echo ""
+          echo "💡 WhatsApp Note: Direct WhatsApp messaging requires the WhatsApp Business API."
+          echo "   See README.md for integration options."
+
+  notify-summary:
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📋 Build Summary
+        run: |
+          echo "🛠️ VibeMatch Build Summary"
+          echo "========================="
+          echo "Build job status: ${{ needs.build.result }}"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo ""
+          echo "📱 Download builds from: https://expo.dev/accounts/vibematch/projects/vibematch-native/builds"
+          echo ""
+          echo "Contact: 9677026531 (India)"
